@@ -698,10 +698,15 @@ func validatorDeriveAndSweep() string {
 // held until the last process holding it, curl included, exits, and the kernel
 // drops it if that process dies. Every sweep, probe, transfer and publish runs
 // under it. The lockfile must not match *.tmp and is never deleted: unlinking
-// a held lockfile lets the next pod lock a fresh inode.
-const cacheDirLock = `exec 9>"$CACHE_DIR/.llmkube-download.lock" || exit 1; ` +
+// a held lockfile lets the next pod lock a fresh inode. A directory this uid
+// cannot write cannot have two writers, so the lock is skipped there; `command`
+// stops a failed exec redirection from exiting the shell.
+const cacheDirLock = `if [ -w "$CACHE_DIR" ]; then ` +
+	`command -v flock >/dev/null 2>&1 || { echo "ERROR: the init image must provide flock to lock $CACHE_DIR" >&2; exit 1; }; ` +
+	`command exec 9>"$CACHE_DIR/.llmkube-download.lock" || { echo "ERROR: could not open $CACHE_DIR/.llmkube-download.lock" >&2; exit 1; }; ` +
 	`if ! flock -n 9; then echo 'Waiting for the download lock held by another pod...'; ` +
-	`flock 9 || { echo "ERROR: could not lock $CACHE_DIR/.llmkube-download.lock; the init image must provide flock" >&2; exit 1; }; fi; `
+	`flock 9 || { echo "ERROR: could not lock $CACHE_DIR/.llmkube-download.lock; the cache volume must support file locking (NFS needs a lock daemon)" >&2; exit 1; }; fi; ` +
+	`else echo "WARNING: $CACHE_DIR is not writable by uid $(id -u); skipping the download lock" >&2; fi; `
 
 // partialSizeGuard fails a resumable transfer whose partial does not match the
 // advertised Content-Length, and deletes the partial so the next start begins

@@ -225,3 +225,44 @@ func TestModelDownloadSizeGuard_Behavioral(t *testing.T) {
 		})
 	}
 }
+
+// A warm cache this uid cannot write, as the air-gapped import in
+// docs/MODEL-CACHE.md can leave behind, must still start: the lock is skipped
+// with a warning instead of failing to create the lockfile.
+func TestModelDownloadLock_ReadOnlyWarmCache(t *testing.T) {
+	skipWithoutInitScriptTools(t)
+	if os.Geteuid() == 0 {
+		t.Skip("root writes through directory permissions")
+	}
+	for _, tc := range []struct {
+		name   string
+		script string
+		files  string
+	}{
+		{"single-file", buildModelInitCommand(false, false, true, false, false, RefreshPolicyIfNotPresent), ""},
+		{"multi-file", buildMultiFileInitCommand(true, false, false, false, RefreshPolicyIfNotPresent), "model.gguf"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			modelPath := filepath.Join(dir, "model.gguf")
+			if err := os.WriteFile(modelPath, []byte("cached"), 0o444); err != nil {
+				t.Fatalf("seed cached model: %v", err)
+			}
+			if err := os.Chmod(dir, 0o555); err != nil { //nolint:gosec // a directory needs x to be traversed
+				t.Fatalf("chmod cache dir: %v", err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o755) }) //nolint:gosec // restored so TempDir cleanup can delete it
+			cmd := exec.Command("sh", "-c", tc.script)
+			cmd.Env = append(os.Environ(),
+				"MODEL_SOURCE=http://127.0.0.1:1/model.gguf", "MODEL_PATH="+modelPath, "CACHE_DIR="+dir,
+				"MODEL_FILES="+tc.files)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("a read-only warm cache failed the init script: %v\n%s", err, out)
+			}
+			if !strings.Contains(string(out), "skipping the download lock") {
+				t.Errorf("missing the skipped-lock warning\n%s", out)
+			}
+		})
+	}
+}
